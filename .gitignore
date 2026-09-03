@@ -1,0 +1,42 @@
+# DATA_DIR used by the Python scripts:
+# <repository-root>/data
+# Resolved in this checkout as:
+# /Users/gomesr/Library/CloudStorage/OneDrive-UW-EauClaire/Code/methylation/methylation_imbalance_solver/data
+/data/
+
+# Previous external input locations (documentation only; Git cannot ignore
+# paths outside this repository):
+# ../../Final/Main Code/Preprocessing/Methylation_Imputation/
+# ../../../Final/Main Code/Preprocessing/Methylation_Imputation/
+# /Users/gomesr/Library/CloudStorage/OneDrive-UW-EauClaire/Data_Code/CSV_Files/
+# /data/groups/gomesr/DeepL_Bio/PDAC_TCGA/Data_Code/scratch/Limma/
+#
+# Previous external analysis root used by figure generation:
+# /data/groups/gomesr/DeepL_Bio/PDAC_TCGA/Data_Code/V3_Work/
+#
+# Previous working-directory-relative enrichment locations:
+# No Sampling/output_files3/NoSmp/Meth/
+# Oversampling/ROS/output_files3/ROS/Meth/
+# Oversampling/SMOTE/output_files3/Meth/
+# Oversampling/AdaptiveSynthetic/output_files3/AdaptiveSynthetic/Meth/
+# Undersampling/RUS/output_files3/RUS/Meth/
+# Undersampling/ClusterCentroids/output_files3/ClusterCentroids/Meth/
+# Undersampling/AllKNN/output_files3/AllKNN/Meth/
+
+# Feature-selection outputs
+/FeatureSelection/NoSampling/output_files3/
+/FeatureSelection/OverSampling/output_files3/
+/FeatureSelection/UnderSampling/output_files3/
+
+# Enrichment results, figures, and summary tables
+/continuous_enrichment_results/
+/summary_tables/
+/Figure3_Threshold_Summary.csv
+/Figure3_Rank_Summary.csv
+
+# Python-generated files
+__pycache__/
+*.py[cod]
+
+# Operating-system metadata
+.DS_Store

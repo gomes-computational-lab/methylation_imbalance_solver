@@ -9,12 +9,15 @@ from imblearn.under_sampling import AllKNN
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import f_classif
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "data"
 
 # ============================================================
 # Output directory
 # ============================================================
 
-output_dir = Path("output_files3/AllKNN/Meth")
+output_dir = SCRIPT_DIR / "output_files3/AllKNN/Meth"
 output_dir.mkdir(parents=True, exist_ok=True)
 
 print("Current working directory:", Path.cwd())
@@ -25,7 +28,7 @@ print("Output directory:", output_dir.resolve())
 # Load and clean dataset
 # ============================================================
 
-file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
+file = DATA_DIR / "BetaData_SimpleImpute_Zero.csv"
 
 meth_df = pd.read_csv(file)
 
