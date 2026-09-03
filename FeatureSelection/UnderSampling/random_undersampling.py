@@ -1,138 +1,233 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-
-import pandas as pd
-from sklearn.feature_selection import SelectFromModel
-from sklearn.ensemble import RandomForestClassifier
 import numpy as np
-from sklearn.ensemble import ExtraTreesClassifier
+import pandas as pd
 
-
-# In[15]:
-
-
-# get dataset
-file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
-df = pd.read_csv(file, sep=",")
-
-df = df.drop("Donor_Sample", axis=1)
-
-df.head()
-
-
-# In[23]:
-
-
-normal_list = df.index[df['is_tumor'] == 0].tolist()
-print(normal_list)
-tumor_list = df.index[df['is_tumor'] == 1].tolist()
-print(tumor_list)
-
-
-# In[25]:
-
-
-# Instead of taking the tumor in sequence, pull them randomly and remove them from the list, 
-# so they cannot be reused. Redo the RUS with this. 
-
-# Might be a random subset function I can use, so I don’t have to create them on my own.
-# Use a different seed each time I randomly subset.
-
-# read the "HERE"
-
-
-# In[26]:
-
-
-#Divide the list of 179 tumor in groups of 8 and merge them with 4 normal samples. 
-# 8 times 22 = 176
-from sklearn.feature_selection import SelectKBest
+from pathlib import Path
+from imblearn.under_sampling import RandomUnderSampler
+from sklearn.ensemble import RandomForestClassifier
 from sklearn.feature_selection import f_classif
-import random
-
-def run_RUS(index):
-    tumor_list_cpy = []
-    tumor_list_cpy = tumor_list_cpy + tumor_list
 
 
-    final_list1 = []
-    final_list2 = []
+# ============================================================
+# Output directory
+# ============================================================
 
-    for i in range(0, 176, 8):
-        tumor_subset = []
+output_dir = Path("output_files3/RUS/Meth")
+output_dir.mkdir(parents=True, exist_ok=True)
 
-         # changing the random seed each iteration
-        random.seed(i)
+print("Current working directory:", Path.cwd())
+print("Output directory:", output_dir.resolve())
 
-        # randomly subsetting the tumors
-        for _ in range(8):
-            rand_index = random.choice(tumor_list_cpy)
-            tumor_list_cpy.remove(rand_index)
-            tumor_subset.append(rand_index)
 
-        # combine the 8 random tumors with the 4 normals
-        res = sorted(tumor_subset + normal_list) 
-        df_selected = df.iloc[res]
+# ============================================================
+# Load and clean dataset
+# ============================================================
 
-        #split dataset into features and target
-        X = df_selected.iloc[:,:-1] 
-        Y = df_selected.iloc[:,-1] 
-        print("Y = ",Y.shape)
-             
-    
-        print("Only random forest")
-        sel = RandomForestClassifier(n_estimators = 500, random_state=index)
-        sel.fit(X, Y)
-        rf_sel_features=sel.feature_importances_
-        #Some features are not important and get marked as 0. Hence we will extract features with importance > 0
+file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
 
-        feat_importances = pd.Series(rf_sel_features, index=X.columns)
+df = pd.read_csv(file)
 
-        list1 = []
-        for j in range(len(feat_importances.index)):
-            if feat_importances.values[j]>0:
-                list1.append(feat_importances.index[j])
-        print(len(list1))
+# Remove accidental saved-index columns
+df = df.drop(
+    columns=[
+        col for col in df.columns
+        if str(col).startswith("Unnamed:")
+        or str(col).lower() in {"index", "level_0"}
+    ],
+    errors="ignore"
+)
 
-        final_list1.append(list1)
+target_names = {
+    0: "normal",
+    1: "tumor"
+}
 
-        print("Only ANOVA")
-        X_new = SelectKBest(f_classif, k=X.shape[1]).fit_transform(X, Y)
-        fvals, pvals = f_classif(X_new, Y)
+df["target"] = df["is_tumor"].map(target_names)
 
-        #Get the list of cpg marker names
-        col_list =  X.columns.tolist()
+df = df.drop(
+    columns=["is_tumor", "Donor_Sample"],
+    errors="raise"
+)
 
-        #Check how many markers are less than 0.05
-        h = sum(float(num) < 0.05 for num in pvals)
+X_original = df.drop(columns="target")
+y_original = df["target"]
 
-        #create a list with marker names haiing p-values less than 0.05
-        list2 = []
-        for j in range(len(pvals)):
-            if pvals[j] < 0.05:
-                list2.append(col_list[j])
-        print(len(list2))
-        final_list2.append(list2)
+print("Dataframe shape:", df.shape)
+print("X_original shape:", X_original.shape)
+print("First five predictors:", X_original.columns[:5].tolist())
+print("Last five predictors:", X_original.columns[-5:].tolist())
 
-        # combine all lists into one
-        big_list1 = []
-        big_list1 = big_list1 + final_list1[0]
-        for i in range(1,len(final_list1)):
-            big_list1.extend(final_list1[i])
-        my_df = pd.DataFrame(big_list1, columns=[["cpg_marker"]])
-        file_name = 'output_files2/Meth/Meth_Impt_Features_RF_'+ str(index) + '.csv'
-        my_df.to_csv(file_name, index=False, header=True)
+print("\nOriginal target distribution:")
+print(y_original.value_counts())
 
-        big_list2 = []
-        big_list2 = big_list2 + final_list2[0]
-        for i in range(1,len(final_list2)):
-            big_list2.extend(final_list2[i])
-        my_df2 = pd.DataFrame(big_list2, columns=[["cpg_marker"]])
-        file_name = 'output_files2/Meth/Meth_Impt_Features_ANOVA_'+ str(index) + '.csv'
-        my_df2.to_csv(file_name, index=False, header=True)
 
+# ============================================================
+# Run RUS, RF, and ANOVA across 10 independent runs
+# ============================================================
 
 for i in range(1, 11):
-    run_RUS(i)
 
+    print("\n==============================")
+    print(f"Starting RUS run {i}")
+    print("==============================")
+
+    # minority-to-majority ratio = 1:2
+    # 11 normal samples and 22 tumor samples
+    rus = RandomUnderSampler(
+        sampling_strategy=0.5,
+        random_state=i
+    )
+
+    X_resampled, y_resampled = rus.fit_resample(
+        X_original,
+        y_original
+    )
+
+    X = pd.DataFrame(
+        X_resampled,
+        columns=X_original.columns
+    )
+
+    y = pd.Series(
+        y_resampled,
+        name="target"
+    )
+
+    # Reproducible shuffle
+    combined = X.copy()
+    combined["target"] = y.values
+
+    combined = combined.sample(
+        frac=1,
+        random_state=i
+    ).reset_index(drop=True)
+
+    X = combined.drop(columns="target")
+    y = combined["target"]
+
+    print("Resampled target distribution:")
+    print(y.value_counts())
+
+    if y.value_counts().get("normal", 0) != 11:
+        raise ValueError(
+            f"Unexpected number of normal samples in run {i}."
+        )
+
+    if y.value_counts().get("tumor", 0) != 22:
+        raise ValueError(
+            f"Unexpected number of tumor samples in run {i}."
+        )
+
+    # Save selected sample indices for reproducibility
+    selected_indices = rus.sample_indices_
+
+    sample_manifest = pd.DataFrame({
+        "Original_Row_Index": selected_indices,
+        "Target": y_resampled.iloc[selected_indices * 0]
+        if False else np.asarray(y_resampled)
+    })
+
+    sample_manifest["Method"] = "RUS"
+    sample_manifest["Run"] = i
+
+    sample_manifest.to_csv(
+        output_dir / f"RUS_Selected_Samples_Run{i}.csv",
+        index=False
+    )
+
+    # ========================================================
+    # Random Forest statistics
+    # ========================================================
+
+    print("Running Random Forest")
+
+    rf_model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=i,
+        n_jobs=-1
+    )
+
+    rf_model.fit(X, y)
+
+    rf_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "RF_Importance": rf_model.feature_importances_
+    })
+
+    rf_results["Method"] = "RUS"
+    rf_results["Run"] = i
+
+    rf_results = rf_results.sort_values(
+        "RF_Importance",
+        ascending=False
+    )
+
+    # Save all RF importance values
+    rf_results.to_csv(
+        output_dir / f"Meth_RF_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    # Preserve selected-feature file used by the old pipeline
+    rf_results.loc[
+        rf_results["RF_Importance"] > 0,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}RF.csv",
+        index=False,
+        header=False
+    )
+
+    # ========================================================
+    # ANOVA statistics
+    # ========================================================
+
+    print("Running ANOVA")
+
+    fvals, pvals = f_classif(X, y)
+
+    anova_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "ANOVA_F": fvals,
+        "ANOVA_P": pvals
+    })
+
+    anova_results["Method"] = "RUS"
+    anova_results["Run"] = i
+
+    anova_results["ANOVA_F"] = (
+        anova_results["ANOVA_F"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    anova_results["ANOVA_P"] = (
+        anova_results["ANOVA_P"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(1.0)
+    )
+
+    anova_results = anova_results.sort_values(
+        "ANOVA_F",
+        ascending=False
+    )
+
+    # Save all ANOVA statistics
+    anova_results.to_csv(
+        output_dir / f"Meth_ANOVA_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    # Preserve selected-feature file used by the old pipeline
+    anova_results.loc[
+        anova_results["ANOVA_P"] < 0.05,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}Anova.csv",
+        index=False,
+        header=False
+    )
+
+    print(f"Completed RUS run {i}")

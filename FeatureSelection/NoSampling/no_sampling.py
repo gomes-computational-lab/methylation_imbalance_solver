@@ -1,125 +1,180 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
+import numpy as np
 import pandas as pd
+
+from pathlib import Path
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_classif
 
 
-# In[2]:
+# ============================================================
+# Output directory
+# ============================================================
+
+output_dir = Path("output_files3/NoSmp/Meth")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+print("Current working directory:", Path.cwd())
+print("Output directory:", output_dir.resolve())
 
 
-# get dataset
-file = "../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
-meth_df = pd.read_csv(file, sep=",")
+# ============================================================
+# Load and clean dataset
+# ============================================================
+
+file = (
+    "../../Final/Main Code/Preprocessing/"
+    "Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
+)
+
+meth_df = pd.read_csv(file)
+
+# Remove accidental saved-index columns
+meth_df = meth_df.drop(
+    columns=[
+        col for col in meth_df.columns
+        if str(col).startswith("Unnamed:")
+        or str(col).lower() in {"index", "level_0"}
+    ],
+    errors="ignore"
+)
 
 target_names = {
-    0:"normal",
-    1:"tumor", 
+    0: "normal",
+    1: "tumor"
 }
 
-meth_df['target'] = meth_df['is_tumor'].map(target_names)
-meth_df = meth_df.drop("is_tumor", axis=1)
-meth_df = meth_df.drop("Donor_Sample", axis=1)
+meth_df["target"] = meth_df["is_tumor"].map(target_names)
+
+meth_df = meth_df.drop(
+    columns=["is_tumor", "Donor_Sample"],
+    errors="raise"
+)
+
+X = meth_df.drop(columns="target")
+y = meth_df["target"]
+
+print("Dataset shape:", meth_df.shape)
+print("Predictor shape:", X.shape)
+
+print("\nTarget distribution:")
+print(y.value_counts())
+
+print("\nFirst five predictors:")
+print(X.columns[:5].tolist())
+
+print("\nLast five predictors:")
+print(X.columns[-5:].tolist())
 
 
-# In[ ]:
+# ============================================================
+# Random Forest: 10 runs
+# ============================================================
+
+for run in range(1, 11):
+
+    print("\n==============================")
+    print(f"Starting No Sampling RF run {run}")
+    print("==============================")
+
+    rf_model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=run,
+        n_jobs=-1
+    )
+
+    rf_model.fit(X, y)
+
+    rf_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "RF_Importance": rf_model.feature_importances_,
+        "Method": "NoSmp",
+        "Run": run
+    })
+
+    rf_results = rf_results.sort_values(
+        "RF_Importance",
+        ascending=False
+    )
+
+    # Save all continuous RF importance values
+    rf_results.to_csv(
+        output_dir / f"Meth_RF_Statistics_Run{run}.csv",
+        index=False
+    )
+
+    # Optional: preserve a selected-feature output
+    rf_results.loc[
+        rf_results["RF_Importance"] > 0,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{run}RF.csv",
+        index=False,
+        header=False
+    )
+
+    print(
+        "RF-positive CpGs:",
+        int((rf_results["RF_Importance"] > 0).sum())
+    )
 
 
-# stores cpg markers
-headers = meth_df.columns
-headers = headers[:-1] # get rid of target
-headers
+# ============================================================
+# ANOVA: one deterministic run
+# ============================================================
 
+print("\n==============================")
+print("Running No Sampling ANOVA")
+print("==============================")
 
-# In[ ]:
+fvals, pvals = f_classif(X, y)
 
+anova_results = pd.DataFrame({
+    "CpG_Marker": X.columns,
+    "ANOVA_F": fvals,
+    "ANOVA_P": pvals,
+    "Method": "NoSmp",
+    "Run": 1
+})
 
-from collections import Counter
+anova_results["ANOVA_F"] = (
+    anova_results["ANOVA_F"]
+    .replace([np.inf, -np.inf], np.nan)
+    .fillna(0.0)
+)
 
-X = meth_df.iloc[:,:-1]
-y = meth_df.iloc[:,-1] 
+anova_results["ANOVA_P"] = (
+    anova_results["ANOVA_P"]
+    .replace([np.inf, -np.inf], np.nan)
+    .fillna(1.0)
+)
 
-# visualize data
-counter = Counter(y)
-print(counter)
+anova_results = anova_results.sort_values(
+    "ANOVA_F",
+    ascending=False
+)
 
+# Save all continuous ANOVA statistics
+anova_results.to_csv(
+    output_dir / "Meth_ANOVA_Statistics_Run1.csv",
+    index=False
+)
 
-# In[ ]:
+# Optional: preserve selected-feature output
+anova_results.loc[
+    anova_results["ANOVA_P"] < 0.05,
+    ["CpG_Marker"]
+].to_csv(
+    output_dir / "Meth_Impt_Features1Anova.csv",
+    index=False,
+    header=False
+)
 
+print(
+    "ANOVA-significant CpGs:",
+    int((anova_results["ANOVA_P"] < 0.05).sum())
+)
 
-# Running the random forest 10 times, changing random_state every time
-for i in range(1, 11):
-    
-    final_list = []
-
-    print("Only random forest")
-    sel = RandomForestClassifier(n_estimators = 500, random_state=i)
-    sel.fit(X, y)
-    rf_sel_features=sel.feature_importances_
-    #Some features are not important and get marked as 0. Hence we will extract features with importance > 0
-
-    feat_importances = pd.Series(rf_sel_features, index=X.columns)
-    print(feat_importances)
-
-    list1 = []
-    for j in range(len(feat_importances.index)):
-        if feat_importances.values[j]>0:
-            list1.append(feat_importances.index[j])
-    print(len(list1))
-
-    final_list.append(list1)
-    my_df = pd.DataFrame(final_list)
-    my_df = my_df.T 
-    file_name = 'output_files/Random_Forest_Looped/Meth_Impt_Features' + str(i) + 'RF.csv'
-    my_df.to_csv(file_name, index=False, header=False)
-
-
-# In[ ]:
-
-
-# my_df = pd.DataFrame(final_list)
-# my_df = my_df.T 
-# file_name = 'output_files/Meth_Impt_Features_RF.csv'
-# my_df.to_csv(file_name, index=False, header=False)
-
-
-# In[ ]:
-
-
-# Run Random Forest 10 times with different random states - Anova is fine only being run once
-
-final_list2 = []
-print("Only ANOVA")
-X_new = SelectKBest(f_classif, k=X.shape[1]).fit_transform(X, y)
-fvals, pvals = f_classif(X_new, y)
-#Get the list of cpg marker names
-col_list =  X.columns.tolist()
-#verify the the fvals are same as total markers
-print(len(fvals))
-#Check how many markers are less than 0.05
-h = sum(float(num) < 0.05 for num in pvals)
-print(h)
-
-
-#create a list with marker names haiing p-values less than 0.05
-list1 = []
-for j in range(len(pvals)):
-    if pvals[j] < 0.05:
-        list1.append(col_list[j])
-print(len(list1))
-final_list2.append(list1)
-
-
-# In[ ]:
-
-
-my_df2 = pd.DataFrame(final_list2)
-my_df2 = my_df2.T 
-file_name2 = 'output_files/Meth_Impt_Features_Anova.csv'
-my_df2.to_csv(file_name2, index=False, header=False)
-
+print("\nNo Sampling analysis completed.")

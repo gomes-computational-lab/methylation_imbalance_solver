@@ -1,105 +1,204 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# IMPORTS
+import numpy as np
 import pandas as pd
-from sklearn.datasets import make_classification
+
+from pathlib import Path
 from imblearn.over_sampling import RandomOverSampler
-from sklearn.feature_selection import SelectFromModel
 from sklearn.ensemble import RandomForestClassifier
-import numpy as np
-from sklearn.ensemble import ExtraTreesClassifier
-import functions
-
-
-# Load Dataset
-df = functions.load_data()
-
-# stores cpg markers
-headers = df.columns
-headers = headers[:-1] # get rid of target
-headers
-
-
-from collections import Counter
-from sklearn.datasets import make_classification
-from imblearn.over_sampling import RandomOverSampler
-import numpy as np
-from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_classif
 
 
+# ============================================================
+# Output directory
+# ============================================================
+
+output_dir = Path("output_files3/ROS/Meth")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+print("Current working directory:", Path.cwd())
+print("Output directory:", output_dir.resolve())
+
+
+# ============================================================
+# Load and clean dataset
+# ============================================================
+
+file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
+
+df = pd.read_csv(file)
+
+# Remove accidental saved-index columns
+df = df.drop(
+    columns=[
+        col for col in df.columns
+        if str(col).startswith("Unnamed:")
+        or str(col).lower() in {"index", "level_0"}
+    ],
+    errors="ignore"
+)
+
+target_names = {
+    0: "normal",
+    1: "tumor"
+}
+
+df["target"] = df["is_tumor"].map(target_names)
+
+df = df.drop(
+    columns=["is_tumor", "Donor_Sample"],
+    errors="raise"
+)
+
+X_original = df.drop(columns="target")
+y_original = df["target"]
+
+print("Dataframe shape:", df.shape)
+print("X_original shape:", X_original.shape)
+print("First five predictors:", X_original.columns[:5].tolist())
+print("Last five predictors:", X_original.columns[-5:].tolist())
+print("Original target distribution:")
+print(y_original.value_counts())
+
+
+# ============================================================
+# Run ROS, RF, and ANOVA across 10 runs
+# ============================================================
+
 for i in range(1, 11):
-    final_list = []
-    
-    # Create a RandomState instance
-    rs_instance = np.random.RandomState(i*7)  # You can use any integer seed
 
-    # Use it in RandomOverSampler
-    X = df.iloc[:,:-1].values
-    y = df.target.values
-    ros = RandomOverSampler(sampling_strategy=0.5, random_state=rs_instance)
-    X_new, y_new = ros.fit_resample(X, y)
-      
-    ros_df = pd.DataFrame(data=X_new, columns=headers)
-    ros_df["Target"] = y_new
-    ros_df = ros_df.sample(frac = 1)
-    target_names = {
-   "normal":0,
-    "tumor":1, 
-    }
+    print("\n==============================")
+    print(f"Starting ROS run {i}")
+    print("==============================")
 
-    ros_df['is_tumor'] = ros_df['Target'].map(target_names)
-    ros_df = ros_df.drop("Target", axis=1)
-    X = ros_df.iloc[:,1:-1] 
-    y = ros_df.iloc[:,-1] 
+    ros = RandomOverSampler(
+        sampling_strategy=0.5,
+        random_state=i
+    )
 
-    print("Only random forest")
-    sel = RandomForestClassifier(n_estimators = 500, random_state=0)
-    sel.fit(X, y)
-    rf_sel_features=sel.feature_importances_
-    #Some features are not important and get marked as 0. Hence we will extract features with importance > 0
-        
-    feat_importances = pd.Series(rf_sel_features, index=X.columns)
-    
-    list1 = []
-    for j in range(len(feat_importances.index)):
-        if feat_importances.values[j]>0:
-            list1.append(feat_importances.index[j])
+    X_resampled, y_resampled = ros.fit_resample(
+        X_original,
+        y_original
+    )
 
-    final_list.append(list1)
-    my_df = pd.DataFrame(final_list)
-    my_df = my_df.T 
-    file_name = 'output_files2/Meth/Meth_Impt_Features' + str(i) + 'RF.csv'
-    my_df.to_csv(file_name, index=False, header=False)
-    
-    final_list2 = []
-    print("Only ANOVA")
-    X_new = SelectKBest(f_classif, k=X.shape[1]).fit_transform(X, y)
-    fvals, pvals = f_classif(X_new, y)
-    #Get the list of cpg marker names
-    col_list =  X.columns.tolist()
-    #verify the the fvals are same as total markers
-    print(len(fvals))
-    #Check how many markers are less than 0.05
-    h = sum(float(num) < 0.05 for num in pvals)
+    X = pd.DataFrame(
+        X_resampled,
+        columns=X_original.columns
+    )
 
+    y = pd.Series(
+        y_resampled,
+        name="target"
+    )
 
-    #create a list with marker names haiing p-values less than 0.05
-    list1 = []
-    for j in range(len(pvals)):
-        if pvals[j] < 0.05:
-            list1.append(col_list[j])
-    final_list2.append(list1)
-    
-    my_df2 = pd.DataFrame(final_list2)
-    my_df2 = my_df2.T 
-    file_name2 = 'output_files2/Meth/Meth_Impt_Features' + str(i) + 'Anova.csv'
-    my_df2.to_csv(file_name2, index=False, header=False)
+    # Reproducible shuffle
+    combined = X.copy()
+    combined["target"] = y.values
 
+    combined = combined.sample(
+        frac=1,
+        random_state=i
+    ).reset_index(drop=True)
 
-# In[ ]:
+    X = combined.drop(columns="target")
+    y = combined["target"]
 
+    print("Resampled target distribution:")
+    print(y.value_counts())
 
+    # ========================================================
+    # Random Forest statistics
+    # ========================================================
 
+    print("Running Random Forest")
 
+    rf_model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=i,
+        n_jobs=-1
+    )
+
+    rf_model.fit(X, y)
+
+    rf_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "RF_Importance": rf_model.feature_importances_
+    })
+
+    rf_results["Method"] = "ROS"
+    rf_results["Run"] = i
+
+    rf_results = rf_results.sort_values(
+        "RF_Importance",
+        ascending=False
+    )
+
+    # Save all RF importance values
+    rf_results.to_csv(
+        output_dir / f"Meth_RF_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    # Preserve old selected-feature output
+    rf_results.loc[
+        rf_results["RF_Importance"] > 0,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}RF.csv",
+        index=False,
+        header=False
+    )
+
+    # ========================================================
+    # ANOVA statistics
+    # ========================================================
+
+    print("Running ANOVA")
+
+    fvals, pvals = f_classif(X, y)
+
+    anova_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "ANOVA_F": fvals,
+        "ANOVA_P": pvals
+    })
+
+    anova_results["Method"] = "ROS"
+    anova_results["Run"] = i
+
+    # Handle constant-feature warnings or invalid values
+    anova_results["ANOVA_F"] = (
+        anova_results["ANOVA_F"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    anova_results["ANOVA_P"] = (
+        anova_results["ANOVA_P"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(1.0)
+    )
+
+    anova_results = anova_results.sort_values(
+        "ANOVA_F",
+        ascending=False
+    )
+
+    # Save all ANOVA statistics
+    anova_results.to_csv(
+        output_dir / f"Meth_ANOVA_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    # Preserve old selected-feature output
+    anova_results.loc[
+        anova_results["ANOVA_P"] < 0.05,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}Anova.csv",
+        index=False,
+        header=False
+    )
+
+    print(f"Completed ROS run {i}")

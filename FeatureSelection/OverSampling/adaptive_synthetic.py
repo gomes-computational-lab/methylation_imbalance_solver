@@ -1,62 +1,200 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# IMPORTS
-import pandas as pd
 import numpy as np
-from collections import Counter
-from sklearn.datasets import make_classification
+import pandas as pd
+
+from pathlib import Path
 from imblearn.over_sampling import ADASYN
-from collections import Counter
-from imblearn.over_sampling import RandomOverSampler
-from sklearn.feature_selection import SelectKBest
-from sklearn.feature_selection import f_classif
-from sklearn.feature_selection import SelectFromModel
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.ensemble import ExtraTreesClassifier
-import functions
+from sklearn.feature_selection import f_classif
 
 
-# Load Dataset
-df = functions.load_data()
+# ============================================================
+# Output directory
+# ============================================================
+
+output_dir = Path("output_files3/AdaptiveSynthetic/Meth")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+print("Current working directory:", Path.cwd())
+print("Output directory:", output_dir.resolve())
 
 
-# stores ensg id
-headers = df.columns
-headers = headers[:-1] # get rid of target
+# ============================================================
+# Load and clean dataset
+# ============================================================
 
+file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
+
+df = pd.read_csv(file)
+
+# Remove accidental saved-index columns
+df = df.drop(
+    columns=[
+        col for col in df.columns
+        if str(col).startswith("Unnamed:")
+        or str(col).lower() in {"index", "level_0"}
+    ],
+    errors="ignore"
+)
+
+target_names = {
+    0: "normal",
+    1: "tumor"
+}
+
+df["target"] = df["is_tumor"].map(target_names)
+
+df = df.drop(
+    columns=["is_tumor", "Donor_Sample"],
+    errors="raise"
+)
+
+X_original = df.drop(columns="target")
+y_original = df["target"]
+
+print("Dataframe shape:", df.shape)
+print("X_original shape:", X_original.shape)
+print("First five predictors:", X_original.columns[:5].tolist())
+print("Last five predictors:", X_original.columns[-5:].tolist())
+print("Original target distribution:")
+print(y_original.value_counts())
+
+
+# ============================================================
+# Run ADASYN, RF, and ANOVA across 10 runs
+# ============================================================
 
 for i in range(1, 11):
-    final_list = []
-    final_list2 = []
-    
-    # Create a RandomState instance
-    rs_instance = np.random.RandomState(i*7)  # You can use any integer seed
 
-    # Apply ADAYSN Algorithm
-    X = df.iloc[:,:-1].values
-    y = df.target.values
-    ada = ADASYN(random_state=rs_instance, n_neighbors=3, sampling_strategy=0.5)
-    X_new, y_new = ada.fit_resample(X, y)
-      
-    X, y = functions.shuffle_data(X_new, y_new, headers)
+    print(f"\n==============================")
+    print(f"Starting ADASYN run {i}")
+    print(f"==============================")
 
-    # Apply Random Forest Feature Selection
-    rf_features = functions.get_rf_features(X,y)
-    final_list.append(rf_features)
-    rf_df = pd.DataFrame(final_list)
-    rf_df = rf_df.T 
-    file_name = 'output_files2/Meth/Meth_Impt_Features' + str(i) + 'RF.csv'
-    rf_df.to_csv(file_name, index=False, header=False)
-    
-    # Apply ANOVA Feature Selection
-    anova_features = functions.get_anova_features(X,y)
-    final_list2.append(anova_features)
-    anova_df = pd.DataFrame(final_list2)
-    anova_df = anova_df.T 
-    file_name2 = 'output_files2/Meth/Meth_Impt_Features' + str(i) + 'Anova.csv'
-    anova_df.to_csv(file_name2, index=False, header=False)
+    adasyn = ADASYN(
+        n_neighbors=3,
+        sampling_strategy=0.5,
+        random_state=i
+    )
 
+    X_resampled, y_resampled = adasyn.fit_resample(
+        X_original,
+        y_original
+    )
 
+    X = pd.DataFrame(
+        X_resampled,
+        columns=X_original.columns
+    )
 
+    y = pd.Series(
+        y_resampled,
+        name="target"
+    )
 
+    # Reproducible shuffle
+    combined = X.copy()
+    combined["target"] = y.values
+
+    combined = combined.sample(
+        frac=1,
+        random_state=i
+    ).reset_index(drop=True)
+
+    X = combined.drop(columns="target")
+    y = combined["target"]
+
+    print("Resampled target distribution:")
+    print(y.value_counts())
+
+    # ========================================================
+    # Random Forest statistics
+    # ========================================================
+
+    print("Running Random Forest")
+
+    rf_model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=i,
+        n_jobs=-1
+    )
+
+    rf_model.fit(X, y)
+
+    rf_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "RF_Importance": rf_model.feature_importances_
+    })
+
+    rf_results["Method"] = "ADASYN"
+    rf_results["Run"] = i
+
+    rf_results = rf_results.sort_values(
+        "RF_Importance",
+        ascending=False
+    )
+
+    rf_results.to_csv(
+        output_dir / f"Meth_RF_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    rf_results.loc[
+        rf_results["RF_Importance"] > 0,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}RF.csv",
+        index=False,
+        header=False
+    )
+
+    # ========================================================
+    # ANOVA statistics
+    # ========================================================
+
+    print("Running ANOVA")
+
+    fvals, pvals = f_classif(X, y)
+
+    anova_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "ANOVA_F": fvals,
+        "ANOVA_P": pvals
+    })
+
+    anova_results["Method"] = "ADASYN"
+    anova_results["Run"] = i
+
+    anova_results["ANOVA_F"] = (
+        anova_results["ANOVA_F"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    anova_results["ANOVA_P"] = (
+        anova_results["ANOVA_P"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(1.0)
+    )
+
+    anova_results = anova_results.sort_values(
+        "ANOVA_F",
+        ascending=False
+    )
+
+    anova_results.to_csv(
+        output_dir / f"Meth_ANOVA_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    anova_results.loc[
+        anova_results["ANOVA_P"] < 0.05,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}Anova.csv",
+        index=False,
+        header=False
+    )
+
+    print(f"Completed ADASYN run {i}")

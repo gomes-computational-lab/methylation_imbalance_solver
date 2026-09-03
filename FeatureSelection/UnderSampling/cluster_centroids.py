@@ -1,113 +1,263 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
+import numpy as np
 import pandas as pd
-from collections import Counter
+
+from pathlib import Path
 from imblearn.under_sampling import ClusterCentroids
-from collections import Counter
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import SelectKBest
-from sklearn.feature_selection import f_classif
 from sklearn.cluster import KMeans
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.feature_selection import f_classif
 
-# In[2]:
 
-# get dataset
+# ============================================================
+# Output directory
+# ============================================================
+
+output_dir = Path("output_files3/ClusterCentroids/Meth")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+print("Current working directory:", Path.cwd())
+print("Output directory:", output_dir.resolve())
+
+
+# ============================================================
+# Load and clean dataset
+# ============================================================
+
 file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
-meth_df = pd.read_csv(file, sep=",")
 
-meth_df = meth_df.drop("Donor_Sample", axis=1)
+meth_df = pd.read_csv(file)
 
-#meth_df.head()
+# Remove accidental index columns
+meth_df = meth_df.drop(
+    columns=[
+        col for col in meth_df.columns
+        if str(col).startswith("Unnamed:")
+        or str(col).lower() in {"index", "level_0"}
+    ],
+    errors="ignore"
+)
 
+target_names = {
+    0: "normal",
+    1: "tumor"
+}
 
-# In[3]:
+meth_df["target"] = meth_df["is_tumor"].map(target_names)
 
+meth_df = meth_df.drop(
+    columns=["is_tumor", "Donor_Sample"],
+    errors="raise"
+)
 
-# stores ensg id
-headers = meth_df.columns
-headers = headers[:-1] # get rid of target
+X_original = meth_df.drop(columns="target")
+y_original = meth_df["target"]
 
+print("Dataframe shape:", meth_df.shape)
+print("X_original shape:", X_original.shape)
+print("First five predictors:", X_original.columns[:5].tolist())
+print("Last five predictors:", X_original.columns[-5:].tolist())
 
-X = meth_df.iloc[:,:-1].values
-y = meth_df.target.values
-
-# visualize data
-counter = Counter(y)
-print(counter)
-
-
-def run_CC(index):
-
-    final_list1 = list()
-    final_list2 = list()
-
-    # doing 8 iterations to ensure all majority class data is being used (176/184 ish) bc 11 normal
-    # however, we can't guarentee that KMeans doesn't reuse some of the same majority samples 
-    # but that is why we do 10 rounds of this to account for randomness :)
-    for i in range(0,8):
-        X = meth_df.iloc[:,:-1].values
-        y = meth_df.is_tumor.values
-
-        # setting KMeans random_state=None makes it use the random init which will be different every time ran
-        cc = ClusterCentroids(sampling_strategy=0.5, estimator=KMeans(n_init=1, random_state=None), random_state=i) 
-        X_res, y_res = cc.fit_resample(X, y)
-
-        cc_df = pd.DataFrame(data=X_res, columns=headers)
-        cc_df["is_tumor"] = y_res
-        cc_df = cc_df.sample(frac = 1)
-
-        X = cc_df.iloc[:,1:-1] 
-        y = cc_df.iloc[:,-1] 
-
-        print("Only random forest")
-        sel = RandomForestClassifier(n_estimators = 500, random_state=i)
-        sel.fit(X, y)
-        rf_sel_features=sel.feature_importances_
-        #Some features are not important and get marked as 0. Hence we will extract features with importance > 0
-
-        feat_importances = pd.Series(rf_sel_features, index=X.columns)
-
-        list1 = []
-        for j in range(len(feat_importances.index)):
-            if feat_importances.values[j]>0:
-                list1.append(feat_importances.index[j])
-
-        final_list1.append(list1)
-        
-        print("Only ANOVA")
-        X_new = SelectKBest(f_classif, k=X.shape[1]).fit_transform(X, y)
-        fvals, pvals = f_classif(X_new, y)
-
-        #Get the list of cpg marker names
-        col_list =  X.columns.tolist()
-
-        #Check how many markers are less than 0.05
-        h = sum(float(num) < 0.05 for num in pvals)
-
-        #create a list with marker names haiing p-values less than 0.05
-        list2 = []
-        for j in range(len(pvals)):
-            if pvals[j] < 0.05:
-                list2.append(col_list[j])
-        final_list2.append(list2)
-    
-    final_flat1 = [item for sublist in final_list1 for item in sublist]
-    my_df = pd.DataFrame(final_flat1)
-    my_df = my_df.T 
-    file_name = 'output_files2/Meth_Actual/Meth_Impt_Features' + str(index) + 'RF.csv'
-    my_df.to_csv(file_name, index=False, header=False)
-    
-    final_flat2 = [item for sublist in final_list2 for item in sublist]
-    my_df2 = pd.DataFrame(final_flat2)
-    my_df2 = my_df2.T 
-    file_name2 = 'output_files2/Meth_Actual/Meth_Impt_Features' + str(index) + 'Anova.csv'
-    my_df2.to_csv(file_name2, index=False, header=False)
+print("\nOriginal target distribution:")
+print(y_original.value_counts())
 
 
+# ============================================================
+# Run Cluster Centroids, RF, and ANOVA across 10 runs
+# ============================================================
 
-for i in range(1, 10):
-    print(i)
-    run_CC(i)
+for i in range(1, 11):
+
+    print("\n========================================")
+    print(f"Starting Cluster Centroids run {i}")
+    print("========================================")
+
+    # sampling_strategy=0.5 gives approximately:
+    # 11 normal samples and 22 majority-class tumor centroids
+    kmeans = KMeans(
+        n_init=10,
+        random_state=i
+    )
+
+    cc = ClusterCentroids(
+        sampling_strategy=0.5,
+        estimator=kmeans,
+        random_state=i
+    )
+
+    X_resampled, y_resampled = cc.fit_resample(
+        X_original,
+        y_original
+    )
+
+    X = pd.DataFrame(
+        X_resampled,
+        columns=X_original.columns
+    )
+
+    y = pd.Series(
+        y_resampled,
+        name="target"
+    )
+
+    # Reproducible shuffle
+    combined = X.copy()
+    combined["target"] = y.values
+
+    combined = combined.sample(
+        frac=1,
+        random_state=i
+    ).reset_index(drop=True)
+
+    X = combined.drop(columns="target")
+    y = combined["target"]
+
+    print("Resampled target distribution:")
+    print(y.value_counts())
+
+    normal_count = y.value_counts().get("normal", 0)
+    tumor_count = y.value_counts().get("tumor", 0)
+
+    if normal_count != 11:
+        raise ValueError(
+            f"Run {i}: expected 11 normal samples, "
+            f"but found {normal_count}."
+        )
+
+    if tumor_count != 22:
+        raise ValueError(
+            f"Run {i}: expected 22 tumor centroids, "
+            f"but found {tumor_count}."
+        )
+
+    # ========================================================
+    # Save resampled centroid dataset
+    # ========================================================
+
+    # These rows include the retained normal samples and the
+    # synthetic majority-class tumor centroids.
+    resampled_output = X.copy()
+    resampled_output["target"] = y.values
+    resampled_output["Method"] = "ClusterCentroids"
+    resampled_output["Run"] = i
+
+    # This file will be extremely large because it contains
+    # every CpG marker. Keep this export only if needed.
+    #
+    # resampled_output.to_csv(
+    #     output_dir / f"ClusterCentroids_Resampled_Run{i}.csv",
+    #     index=False
+    # )
+
+    # Save a compact run summary instead
+    run_summary = pd.DataFrame({
+        "Method": ["ClusterCentroids"],
+        "Run": [i],
+        "Normal_Count": [normal_count],
+        "Tumor_Centroid_Count": [tumor_count],
+        "Total_Count": [len(y)],
+        "KMeans_N_Init": [10],
+        "Random_State": [i]
+    })
+
+    run_summary.to_csv(
+        output_dir / f"ClusterCentroids_Run_Summary_{i}.csv",
+        index=False
+    )
+
+    # ========================================================
+    # Random Forest statistics
+    # ========================================================
+
+    print("Running Random Forest")
+
+    rf_model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=i,
+        n_jobs=-1
+    )
+
+    rf_model.fit(X, y)
+
+    rf_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "RF_Importance": rf_model.feature_importances_
+    })
+
+    rf_results["Method"] = "ClusterCentroids"
+    rf_results["Run"] = i
+
+    rf_results = rf_results.sort_values(
+        "RF_Importance",
+        ascending=False
+    )
+
+    # Save all continuous importance values
+    rf_results.to_csv(
+        output_dir / f"Meth_RF_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    # Preserve old selected-feature output
+    rf_results.loc[
+        rf_results["RF_Importance"] > 0,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}RF.csv",
+        index=False,
+        header=False
+    )
+
+    # ========================================================
+    # ANOVA statistics
+    # ========================================================
+
+    print("Running ANOVA")
+
+    fvals, pvals = f_classif(X, y)
+
+    anova_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "ANOVA_F": fvals,
+        "ANOVA_P": pvals
+    })
+
+    anova_results["Method"] = "ClusterCentroids"
+    anova_results["Run"] = i
+
+    anova_results["ANOVA_F"] = (
+        anova_results["ANOVA_F"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    anova_results["ANOVA_P"] = (
+        anova_results["ANOVA_P"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(1.0)
+    )
+
+    anova_results = anova_results.sort_values(
+        "ANOVA_F",
+        ascending=False
+    )
+
+    # Save all continuous ANOVA statistics
+    anova_results.to_csv(
+        output_dir / f"Meth_ANOVA_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    # Preserve old selected-feature output
+    anova_results.loc[
+        anova_results["ANOVA_P"] < 0.05,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}Anova.csv",
+        index=False,
+        header=False
+    )
+
+    print(f"Completed Cluster Centroids run {i}")

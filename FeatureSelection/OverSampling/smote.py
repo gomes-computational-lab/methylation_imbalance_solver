@@ -1,92 +1,161 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-from imblearn.over_sampling import SMOTE
+import numpy as np
 import pandas as pd
+from imblearn.over_sampling import SMOTE
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import SelectKBest
 from sklearn.feature_selection import f_classif
-import FeatureSelection.OverSampling.functions as functions
-import functions
 
-# Load Dataset
-df = functions.load_data()
+from pathlib import Path
+
+output_dir = Path("output_files3/Meth")
+output_dir.mkdir(parents=True, exist_ok=True)
+
+print("Current working directory:", Path.cwd())
+print("Output directory:", output_dir.resolve())
+
+# get dataset
+file = "../../../Final/Main Code/Preprocessing/Methylation_Imputation/BetaData_SimpleImpute_Zero.csv"
+# Read dataset
+rna_df = pd.read_csv(file)
+
+# 2. Remove accidental saved-index columns
+rna_df = rna_df.drop(
+    columns=[
+        col for col in rna_df.columns
+        if str(col).startswith("Unnamed:")
+        or str(col).lower() in {"index", "level_0"}
+    ],
+    errors="ignore"
+)
 
 
-# stores cpg markers
-headers = df.columns
-headers = headers[:-1] # get rid of target
-headers
+target_names = {
+    0: "normal",
+    1: "tumor"
+}
 
+rna_df["target"] = rna_df["is_tumor"].map(target_names)
+
+# 4. Remove non-feature columns
+rna_df = rna_df.drop(
+    columns=["is_tumor", "Donor_Sample"],
+    errors="raise"
+)
+
+# 5. Recreate X_original and y_original AFTER cleaning
+X_original = rna_df.drop(columns="target")
+y_original = rna_df["target"]
+
+print("rna_df shape:", rna_df.shape)
+print("X_original shape:", X_original.shape)
+print("First five predictors:", X_original.columns[:5].tolist())
+print("Last five predictors:", X_original.columns[-5:].tolist())
+print("Target distribution:")
+print(y_original.value_counts())
 
 
 for i in range(1, 11):
-    final_list = []
-    final_list2 = []
-    
-    # Apply SMOTE Algorithm
-    X = df.iloc[:,:-1].values
-    y = df.target.values
-    smote = SMOTE(k_neighbors=3, sampling_strategy=0.5, random_state=i) # changing the SMOTE rand state
-    X_new, y_new = smote.fit_resample(X, y)
-    
-    smote_df = pd.DataFrame(data=X_new, columns=headers)
-    smote_df["Target"] = y_new
-    smote_df = smote_df.sample(frac = 1)
-    target_names = {
-   "normal":0,
-    "tumor":1, 
-    }
 
-    smote_df['is_tumor'] = smote_df['Target'].map(target_names)
-    smote_df = smote_df.drop("Target", axis=1)
-    X = smote_df.iloc[:,1:-1] 
-    y = smote_df.iloc[:,-1] 
+    smote = SMOTE(
+        k_neighbors=3,
+        sampling_strategy=0.5,
+        random_state=i
+    )
 
-    print("Only random forest")
-    sel = RandomForestClassifier(n_estimators = 500, random_state=0)
-    sel.fit(X, y)
-    rf_sel_features=sel.feature_importances_
-    #Some features are not important and get marked as 0. Hence we will extract features with importance > 0
-        
-    feat_importances = pd.Series(rf_sel_features, index=X.columns)
-    print(feat_importances)
-    
-    list1 = []
-    for j in range(len(feat_importances.index)):
-        if feat_importances.values[j]>0:
-            list1.append(feat_importances.index[j])
-    print(len(list1))
+    X_resampled, y_resampled = smote.fit_resample(
+        X_original,
+        y_original
+    )
 
-    final_list.append(list1)
-    my_df = pd.DataFrame(final_list)
-    my_df = my_df.T 
-    file_name = 'output_files2/Meth/Meth_Impt_Features' + str(i) + 'RF.csv'
-    my_df.to_csv(file_name, index=False, header=False)
-    
-  
-    print("Only ANOVA")
-    X_new = SelectKBest(f_classif, k=X.shape[1]).fit_transform(X, y)
-    fvals, pvals = f_classif(X_new, y)
-    #Get the list of cpg marker names
-    col_list =  X.columns.tolist()
-    #verify the the fvals are same as total markers
-    print(len(fvals))
-    #Check how many markers are less than 0.05
-    h = sum(float(num) < 0.05 for num in pvals)
-    print(h)
+    X = pd.DataFrame(
+        X_resampled,
+        columns=X_original.columns
+    )
 
+    y = pd.Series(y_resampled, name="target")
 
-    #create a list with marker names haiing p-values less than 0.05
-    list1 = []
-    for j in range(len(pvals)):
-        if pvals[j] < 0.05:
-            list1.append(col_list[j])
-    print(len(list1))
-    final_list2.append(list1)
-    
-    my_df2 = pd.DataFrame(final_list2)
-    my_df2 = my_df2.T 
-    file_name2 = 'output_files2/Meth/Meth_Impt_Features' + str(i) + 'Anova.csv'
-    my_df2.to_csv(file_name2, index=False, header=False)
+    # Optional reproducible shuffle
+    combined = X.copy()
+    combined["target"] = y.values
 
+    combined = combined.sample(
+        frac=1,
+        random_state=i
+    ).reset_index(drop=True)
+
+    X = combined.drop(columns="target")
+    y = combined["target"]
+
+    # -----------------------
+    # Random Forest statistics
+    # -----------------------
+    rf_model = RandomForestClassifier(
+        n_estimators=500,
+        random_state=i,
+        n_jobs=-1
+    )
+
+    rf_model.fit(X, y)
+
+    rf_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "RF_Importance": rf_model.feature_importances_
+    }).sort_values(
+        "RF_Importance",
+        ascending=False
+    )
+
+    rf_results.to_csv(
+        output_dir / f"Meth_RF_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    rf_results.loc[
+        rf_results["RF_Importance"] > 0,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}RF.csv",
+        index=False,
+        header=False
+    )
+
+    # -----------------------
+    # ANOVA statistics
+    # -----------------------
+    fvals, pvals = f_classif(X, y)
+
+    anova_results = pd.DataFrame({
+        "CpG_Marker": X.columns,
+        "ANOVA_F": fvals,
+        "ANOVA_P": pvals
+    })
+
+    anova_results["ANOVA_F"] = (
+        anova_results["ANOVA_F"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(0.0)
+    )
+
+    anova_results["ANOVA_P"] = (
+        anova_results["ANOVA_P"]
+        .replace([np.inf, -np.inf], np.nan)
+        .fillna(1.0)
+    )
+
+    anova_results = anova_results.sort_values(
+        "ANOVA_F",
+        ascending=False
+    )
+
+    anova_results.to_csv(
+        output_dir / f"Meth_ANOVA_Statistics_Run{i}.csv",
+        index=False
+    )
+
+    anova_results.loc[
+        anova_results["ANOVA_P"] < 0.05,
+        ["CpG_Marker"]
+    ].to_csv(
+        output_dir / f"Meth_Impt_Features{i}Anova.csv",
+        index=False,
+        header=False
+    )
